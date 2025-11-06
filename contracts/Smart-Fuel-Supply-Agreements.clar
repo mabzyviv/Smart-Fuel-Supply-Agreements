@@ -13,6 +13,9 @@
 (define-constant ERR-DISPUTE-PERIOD-EXPIRED (err u111))
 (define-constant ERR-ALREADY-DISPUTED (err u112))
 (define-constant ERR-NOT-DISPUTED (err u113))
+(define-constant ERR-ALREADY-RATED (err u114))
+(define-constant ERR-INVALID-RATING (err u115))
+(define-constant ERR-NOT-COMPLETED (err u116))
 
 (define-constant STATUS-CREATED u0)
 (define-constant STATUS-FUNDED u1)
@@ -68,6 +71,25 @@
   { registered-by: principal, active: bool }
 )
 
+(define-map supplier-ratings
+  principal
+  {
+    total-ratings: uint,
+    total-score: uint,
+    completed-agreements: uint
+  }
+)
+
+(define-map agreement-ratings
+  uint
+  {
+    rating: uint,
+    review: (string-ascii 200),
+    rated-by: principal,
+    rated-at: uint
+  }
+)
+
 (define-read-only (get-agreement (agreement-id uint))
   (map-get? agreements agreement-id)
 )
@@ -86,6 +108,35 @@
 
 (define-read-only (get-current-nonce)
   (var-get agreement-nonce)
+)
+
+(define-read-only (get-supplier-rating (supplier principal))
+  (map-get? supplier-ratings supplier)
+)
+
+(define-read-only (get-agreement-rating (agreement-id uint))
+  (map-get? agreement-ratings agreement-id)
+)
+
+(define-read-only (get-supplier-average-rating (supplier principal))
+  (let
+    (
+      (rating-data (map-get? supplier-ratings supplier))
+    )
+    (if (is-some rating-data)
+      (let
+        (
+          (data (unwrap-panic rating-data))
+          (total-ratings (get total-ratings data))
+        )
+        (if (> total-ratings u0)
+          (ok (/ (get total-score data) total-ratings))
+          (ok u0)
+        )
+      )
+      (ok u0)
+    )
+  )
 )
 
 (define-public (register-iot-device (device-id (string-ascii 50)))
@@ -302,6 +353,40 @@
     )
     (asserts! (is-eq (get status agreement) STATUS-CREATED) ERR-INVALID-STATUS)
     (map-set agreements agreement-id (merge agreement { status: STATUS-CANCELLED }))
+    (ok true)
+  )
+)
+
+(define-public (rate-supplier (agreement-id uint) (rating uint) (review (string-ascii 200)))
+  (let
+    (
+      (agreement (unwrap! (map-get? agreements agreement-id) ERR-AGREEMENT-NOT-FOUND))
+      (supplier (get supplier agreement))
+      (current-rating (map-get? supplier-ratings supplier))
+    )
+    (asserts! (is-eq (get buyer agreement) tx-sender) ERR-NOT-BUYER)
+    (asserts! (is-eq (get status agreement) STATUS-COMPLETED) ERR-NOT-COMPLETED)
+    (asserts! (is-none (map-get? agreement-ratings agreement-id)) ERR-ALREADY-RATED)
+    (asserts! (and (>= rating u1) (<= rating u5)) ERR-INVALID-RATING)
+    (map-set agreement-ratings agreement-id {
+      rating: rating,
+      review: review,
+      rated-by: tx-sender,
+      rated-at: stacks-block-height
+    })
+    (match current-rating
+      existing-rating
+        (map-set supplier-ratings supplier {
+          total-ratings: (+ (get total-ratings existing-rating) u1),
+          total-score: (+ (get total-score existing-rating) rating),
+          completed-agreements: (+ (get completed-agreements existing-rating) u1)
+        })
+        (map-set supplier-ratings supplier {
+          total-ratings: u1,
+          total-score: rating,
+          completed-agreements: u1
+        })
+    )
     (ok true)
   )
 )
